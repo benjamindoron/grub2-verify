@@ -1,0 +1,42 @@
+#!/bin/bash
+
+## This, for now, is a holistic script. It assumes that we've either configured signature verification or not.
+## This will need to be changed. Individual scripts should check for their files, and call on a central script (or
+## function therein) to configure things otherwise.
+
+if [[ $(id -u) != 0 ]]; then
+    echo "You must run this script as root"
+    exit 1
+fi
+
+sata_or_nvme=$(if [[ $(mount | grep "/boot/efi" | cut -d " " -f 1) =~ (/dev/nvme*|/dev/mmcblk*) ]]; then echo 3; else echo 2; fi)
+drive_num=$(lsblk | grep /boot/efi | cut -d " " -f 1 | cut -c 3- | rev | cut -c $sata_or_nvme- | rev)
+part_type=$(fdisk /dev/$drive_num -l | grep "Disklabel type" | cut -d " " -f 3)
+ESP_partnum=$(lsblk | grep /boot/efi | cut -c 6)
+#export GPG_TTY=$(tty)
+
+function firstrun {
+    touch /var/tmp/grub_verify-pgp_pass
+    chmod 600 /var/tmp/grub_verify-pgp_pass
+    gpg --gen-random --armor 0 24 > /var/tmp/grub_verify-pgp_pass
+    gpg --pinentry-mode loopback --batch --quick-generate-key --passphrase-file /var/tmp/grub_verify-pgp_pass "Grub_verify testing key" rsa sign never
+    gpg --export "Grub_verify testing key" > /boot/efi/EFI/fedora/pubkey
+    echo "
+    trust (hd0,$part_type$ESP_partnum)/efi/fedora/pubkey --skip-sig
+    set check_signatures=enforce" >> /etc/grub.d/40_custom
+    grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg
+    resign
+}
+
+function resign {
+    for x in $(find /boot -name "*.cfg.sig" -or -name "*.lst.sig" -or -name "*.mod.sig" -or -name "vmlinuz*.sig" -or -name "initramfs*.sig" -or -name "grubenv.sig"); do rm -f "$x"; done
+    for x in $(find /boot -name "*.cfg" -or -name "*.lst" -or -name "*.mod" -or -name "vmlinuz*" -or -name "initramfs*" -or -name "grubenv"); do gpg --batch --detach-sign -u "Grub_verify testing key" --pinentry-mode loopback --passphrase-fd 0 "$x" < /var/tmp/grub_verify-pgp_pass; done
+}
+
+if [ ! -f /boot/efi/EFI/fedora/grub.cfg.sig ]; then
+    firstrun
+    exit 0
+else
+    resign
+    exit 0
+fi

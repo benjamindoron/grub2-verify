@@ -1,0 +1,31 @@
+#!/bin/bash
+
+## This script will only address the kernel and initramfs (we're tacking on grubenv, as it is edited concurrently
+## with kernel upgrades. However, "savedentry" might only change after a reboot. This requires further testing).
+## While these are the most frequently modified, those with certain configurations will need to keep an eye on
+## their system.
+##
+## Thankfully, the new BootLoaderSpec format ensures that grub.cfg is rarely modified. The large majority of users
+## don't use custom.cfg and user.cfg is generally only written once. An initial round of signing should cover all
+## of this. grubenv will be re-signed by this version of the script, but requires further testing.
+##
+## The default configuration doesn't allow for inserting modules, so we don't need to re-sign any of them. While
+## this can hopefully be changed with Grub's 2.04 release, by that time additional module loading can be automated
+## per-environment with patches to grub2-mkconfig.
+##
+## Once/if we turn on signature verification by default, all of the above will be handled with patches to the
+## relevant scripts.
+
+## It's unlikely that we'll hit this, but we need to be sure in case we're run directly.
+if [[ $(id -u) != 0 ]]; then
+    echo "You must run this script as root"
+    exit 1
+fi
+
+old_sigs=$(for x in $(find /boot -name "vmlinuz*.sig" -or -name "initramfs*.sig" | grep -v rescue | sed 's/.sig//'); do if [[ "$x" != "$(rpm -ql kernel-core | grep -e /boot/vmlinuz -e /boot/initramfs | grep "$x")" ]]; then echo "$x"; fi; done)
+new_uname_r=$(rpm -qa --last kernel | head -n 1 | cut -d " " -f 1 | sed 's/kernel-//')
+
+for x in $old_sigs; do rm -f "$x.sig"; done
+for x in $(find /boot -name "grubenv.sig"); do rm -f "$x"; done
+for x in $(find /boot -name "vmlinuz-$new_uname_r" -or -name "initramfs-$new_uname_r.img" -or -name "grubenv"); do gpg --batch --detach-sign -u "Grub_verify testing key" --pinentry-mode loopback --passphrase-fd 0 "$x" < /var/tmp/grub_verify-pgp_pass; done
+exit 0
